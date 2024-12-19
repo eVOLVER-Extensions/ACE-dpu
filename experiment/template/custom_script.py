@@ -5,7 +5,6 @@ import logging
 import os.path
 import time
 import step_utils as su
-import light_control
 import pandas as pd
 import traceback
 
@@ -26,15 +25,11 @@ EVOLVER_PORT = 8081
 
 GROWTH_CURVE_TIME = 0 # hours; experiment time after which to start turbidostat
 
-#TEMP_INITIAL = [38] * 16 #degrees C, makes 16-value list
+TEMP_INITIAL = [37] * 16 #degrees C, makes 16-value list
 #Alternatively enter 16-value list to set different values
-TEMP_INITIAL = [38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38]
+# TEMP_INITIAL = [38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38]
 
 STIR_INITIAL = [10]*16 #try 8,10,12 etc; makes 16-value list
-STIR_CYCLE_VIALS = []
-STIR_ON_TIME = 0.2 # hours
-STIR_OFF_TIME = 1.8 # hours
-
 #Alternatively enter 16-value list to set different values
 #STIR_INITIAL = [7,7,7,7,8,8,8,8,9,9,9,9,10,10,10,10]
 
@@ -42,9 +37,6 @@ VOLUME =  25 #mL, determined by vial cap straw length
 OPERATION_MODE = 'turbidostat' #use to choose between 'turbidostat' and 'chemostat' functions
 # if using a different mode, name your function as the OPERATION_MODE variable
 
-### Light Settings ###
-LIGHT_CAL_FILE = 'light_cal.txt'
-EXCEL_CONFIG_FILE = "experiment_configurations.xlsx"
 
 ##### END OF USER DEFINED GENERAL SETTINGS #####
 
@@ -531,31 +523,6 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
         eVOLVER.fluid_command(MESSAGE)
         logger.info(f'Pump MESSAGE = {MESSAGE}')
 
-    #### LIGHT CONTROL CODE BELOW ####
-    light_control.control(eVOLVER, vials, elapsed_time, logger, EXP_NAME)
-
-    #### STIR CONTROL CODE BELOW ####
-    stir_MESSAGE = ['--'] * 16
-    for vial in turbidostat_vials:
-        if vial in STIR_CYCLE_VIALS:
-            # Calculate current cycle position based on the elapsed time since cycle_start
-            cycle_duration = STIR_ON_TIME + STIR_OFF_TIME    # Total duration of one stir cycle (ON + OFF)
-            time_in_cycle = elapsed_time % cycle_duration  # Position in the current cycle
-
-            # Determine if the current time is in the ON or OFF phase
-            if time_in_cycle < STIR_OFF_TIME:
-                # Stir is OFF
-                stir_MESSAGE[vial] = 0
-                if time_in_cycle < 0.1:
-                    logger.info(f'Vial {vial}: Stir OFF')
-            else:
-                # Stir is ON
-                stir_MESSAGE[vial] = STIR_INITIAL[vial]
-                logger.info(f'Vial {vial}: Stir ON')
-        else:
-            # Stir is ON
-            stir_MESSAGE[vial] = STIR_INITIAL[vial]
-    eVOLVER.update_stir_rate(stir_MESSAGE, immediate = True) # Update the stir rate
 
 if __name__ == '__main__':
     print('Please run eVOLVER.py instead')
