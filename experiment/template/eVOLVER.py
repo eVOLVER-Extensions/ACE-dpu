@@ -8,6 +8,7 @@ import shutil
 import logging
 import argparse
 import numpy as np
+import pandas as pd
 import json
 import traceback
 from scipy import stats
@@ -17,7 +18,8 @@ from nbstreamreader import NonBlockingStreamReader as NBSR
 import custom_script
 from custom_script import EXP_NAME
 from custom_script import EVOLVER_PORT, OPERATION_MODE
-from custom_script import STIR_INITIAL, TEMP_INITIAL, LIGHT_INITIAL, LIGHT_CAL_FILE
+from custom_script import STIR_INITIAL, TEMP_INITIAL, LIGHT_CAL_FILE, EXCEL_CONFIG_FILE
+import step_utils as su
 
 # Should not be changed
 # vials to be considered/excluded should be handled
@@ -333,6 +335,44 @@ class EvolverNamespace(BaseNamespace):
             text_file.write(default + '\n')
         text_file.close()
 
+    def load_excel_configs(self, elapsed_time, vials, config_filename=EXCEL_CONFIG_FILE):
+        """
+        Load configurations from an Excel file and compare them with existing configs for each vial.
+
+        Args:
+            vials (list): A list of vials for which to compare configs.
+            config_filename (str, optional): The path to the Excel file containing the configurations. Defaults to EXCEL_CONFIG_FILE.
+
+        Side Effects:
+            Logs config changes for each vial.
+            Closes the Excel file handle.
+        """
+        
+        # Load the Excel file
+        excel_file = pd.ExcelFile(config_filename)
+
+        # Get the list of configs
+        config_names = excel_file.sheet_names
+
+        # Iterate through each sheet
+        for config_name in config_names:
+            # Read the sheet into a DataFrame
+            config = pd.read_excel(excel_file, sheet_name=config_name)
+            
+            # Compare config from file with existing configs for each vial
+            for vial in vials:
+                current_config = np.array(config.loc[vial])
+                current_config[0] = elapsed_time # replace first value in current config with elapsed time
+                config_change = su.compare_configs(config_name, vial, current_config)
+
+                if config_change:
+                    # Log config change
+                    print(f'Vial {vial}: updating {config_name} config')
+                    logger.info(f'Vial {vial}: updating {config_name} config')
+        
+        # Explicitly close the file handle
+        excel_file.close()
+                
     def initialize_exp(self, vials, experiment_params, log_name, quiet, verbose, ip_address, always_yes = False):
         self.ip_address = ip_address
         self.experiment_params = experiment_params
@@ -384,8 +424,10 @@ class EvolverNamespace(BaseNamespace):
             os.makedirs(os.path.join(EXP_DIR, 'continuous_gr')) # for continuous growth rate
             os.makedirs(os.path.join(EXP_DIR, 'chemo_config'))
             os.makedirs(os.path.join(EXP_DIR, 'step_config')) # for stepwise evolution settings
+            os.makedirs(os.path.join(EXP_DIR, 'step_gen_config')) # for stepwise evolution settings
             os.makedirs(os.path.join(EXP_DIR, 'step_log')) # for stepwise evolution logging
-            os.makedirs(os.path.join(EXP_DIR, 'light_config'))
+            os.makedirs(os.path.join(EXP_DIR, 'light_config')) # light settings
+            os.makedirs(os.path.join(EXP_DIR, 'light_log')) # light values over time
   
             setup_logging(log_name, quiet, verbose)
             for x in vials:
@@ -416,10 +458,6 @@ class EvolverNamespace(BaseNamespace):
                                   defaults=[exp_str,
                                             "0,0"],
                                   directory='growthrate')
-                # make continuous growth rate file
-                self._create_file(x, 'continuous_gr',
-                                  defaults=["0,0,0"], # Format: [elapsed_time (expt time), growth rate]
-                                  directory='continuous_gr')
                 # make chemostat file
                 self._create_file(x, 'chemo_config',
                                   defaults=["0,0,0",
@@ -427,17 +465,29 @@ class EvolverNamespace(BaseNamespace):
                                   directory='chemo_config')
                 # make stepwise evolution settings file
                 self._create_file(x, 'step_config',
-                                  defaults=["0,0,0"], # Format: [elapsed_time, step1, step2, ...]
+                                  defaults=[exp_str,
+                                            "0,0,0"], # Format: [elapsed_time, step1, step2, ...]
                                   directory='step_config')
+                # make stepwise evolution variable generation file
+                self._create_file(x, 'step_gen_config',
+                                  defaults=[exp_str,
+                                            "0,0,0"], # Format: [elapsed_time, ]
+                                  directory='step_gen_config')
                 # make stepwise evolution data logging file
                 self._create_file(x, 'step_log',
-                                  defaults=["0,0,0,0"], # Format: [elapsed_time, step_time, current step, chemical_concentration]
+                                  defaults=[exp_str,
+                                            "0,0,0,0,0"], # Format: [elapsed_time, step_change_time, current step, chemical_concentration, event_message]
                                   directory='step_log')
                 # make light configuration file
-                self._create_file(x, 'light_config', # contains calibrated light values (in uE)
-                                  defaults=[exp_str,
-                                            "0,0,0,0,0"], # format: (time, light1 uE, PWM value 1, light2 uE, PWM value 2)
+                self._create_file(x, 'light_config',
+                                  defaults=["elapsed_time,acclimation_time,acclimation_light,final_light,cycle_start,ON_length,OFF_length",
+                                            "0,0,0,0,0,0,0"],
                                   directory='light_config')
+                # make light log file
+                self._create_file(x, 'light_log',
+                                  defaults=["elapsed_time,light_time,light1_uE,PWM_1,light2_uE,PWM_2,light3_uE,PWM_3",
+                                            "0,0,0,0,0,0,0,0"], # format: (elapsed_time, light_time, light1 uE, PWM value 1, light2 uE, PWM value 2, light3 uE, PWM value 3)
+                                  directory='light_log')
 
             stir_rate = STIR_INITIAL
             temp_values = TEMP_INITIAL
@@ -468,6 +518,9 @@ class EvolverNamespace(BaseNamespace):
             x = loaded_var
             start_time = x[0]
             self.OD_initial = x[1]
+
+        elapsed_time = round((time.time() - start_time) / 3600, 4)
+        self.load_excel_configs(elapsed_time, vials, config_filename=EXCEL_CONFIG_FILE) # Load configurations from an Excel file and compare them with existing configs for each vial.
 
         # copy current custom script to txt file
         backup_filename = '{0}_{1}.txt'.format(EXP_NAME,
@@ -516,7 +569,7 @@ class EvolverNamespace(BaseNamespace):
             pump_cal = json.load(f)
         return pump_cal['coefficients']
     
-    def get_light_vals(self):
+    def get_light_calibration(self):
         file_path = os.path.join(SAVE_PATH, LIGHT_CAL_FILE)
         light_calibration = np.loadtxt(file_path, delimiter="\t")
         if len(light_calibration) == 16:
@@ -552,55 +605,6 @@ class EvolverNamespace(BaseNamespace):
         text_file = open(gr_path, "a+")
         text_file.write("{0},{1}\n".format(elapsed_time, slope))
         text_file.close()
-
-    def tail_to_np(self, path, window=10, BUFFER_SIZE=512):
-        """
-        Reads file from the end and returns a numpy array with the data of the last 'window' lines.
-        Alternative to np.genfromtxt(path) by loading only the needed lines instead of the whole file.
-        """
-        f = open(path, 'rb')
-        if window == 0:
-            return []
-
-        f.seek(0, os.SEEK_END)
-        remaining_bytes = f.tell()
-        size = window + 1  # Read one more line to avoid broken lines
-        block = -1
-        data = []
-
-        while size > 0 and remaining_bytes > 0:
-            if remaining_bytes - BUFFER_SIZE > 0:
-                # Seek back one whole BUFFER_SIZE
-                f.seek(block * BUFFER_SIZE, os.SEEK_END)
-                # read BUFFER
-                bunch = f.read(BUFFER_SIZE)
-            else:
-                # file too small, start from beginning
-                f.seek(0, 0)
-                # only read what was not read
-                bunch = f.read(remaining_bytes)
-
-            bunch = bunch.decode('utf-8')
-            data.append(bunch)
-            size -= bunch.count('\n')
-            remaining_bytes -= BUFFER_SIZE
-            block -= 1
-
-        data = ''.join(reversed(data)).splitlines()[-window:]
-
-        if len(data) < window:
-            # Not enough data
-            return np.asarray([])
-
-        for c, v in enumerate(data):
-            data[c] = v.split(',')
-
-        try:
-            data = np.asarray(data, dtype=np.float64)
-            return data
-        except ValueError:
-            # It is reading the header
-            return np.asarray([])
 
     def custom_functions(self, data, vials, elapsed_time):
         # load user script from custom_script.py
