@@ -4,9 +4,12 @@ import numpy as np
 import logging
 import os.path
 import time
-import step_utils as su
 import pandas as pd
 import traceback
+
+import utils.step_utils as su
+import utils.file_utils as fu
+import utils.config_utils as cu
 
 # logger setup
 logger = logging.getLogger(__name__)
@@ -17,6 +20,7 @@ logger = logging.getLogger(__name__)
 # only change if you wish to have multiple data folders within a single
 # directory for a set of scripts
 EXP_NAME = 'data'
+EXCEL_CONFIG_FILE = 'experiment_configurations.xlsx'
 
 # Port for the eVOLVER connection. You should not need to change this unless you have multiple applications on a single RPi.
 EVOLVER_PORT = 8081
@@ -67,44 +71,6 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
     #upper_thresh = [0.4, 0.4, 0.4, 0.4, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999]
     ### End of Turbidostat Settings ###
 
-    ### Stepped Evolution Settings ###
-    ## Selection Step Settings ##
-    selection_steps = {} # all of the selection value steps to take in this part of the evolution, from low to high
-    # Format: {turbidostat_vial1: [step1, step2, ...], turbidostat_vial2: [step1, step2, ...], ...}
-    # Manual setting example: {0: [0,0.1,0.2,0.3,...], 1: [0,0.2,0.4,0.6,...], ...}
-    # Can be set automatically using below settings
-
-    # Used to calculate steps in selection variable
-    generate_steps = True # True if you want to automatically calculate steps; False if you want to manually input each step
-    log_steps = [False]*14 + [True]*2 # True if you want logarithmic steps; False if linear
-    # For the below settings, specify individually by writing a list of values for each vial, ie [20,20,20,20, 10,10,10,10, 5,5,5,5, 1,1,1,1]
-    # selection_stock_conc = [3000,3000,0,0, 3000,3000,3000,3000, 3000,3000,3000,100, 100,100,100,100]  # stock concentrations for each vial; should be low enough that minimum selection level is possible given min_bolus_s
-    selection_stock_concs = [0]*2 + [12.5] * 14 # stock concentrations for each vial; should be low enough that minimum selection level is possible given min_bolus_s
-    max_selections = [0,0,5,5,       0.5,0.5,5,5,        0.5,0.5,5,5,       5,5,5,5] # maximum value your selection can go to; for chemical selection = proportion of stock concentration (don't want to use all of stock)
-    min_selections = [0,0,0.25,0.25, 0.5,0.5,0.25,0.25,  0.5,0.5,0.25,0.25, 0.5,0.5,0.25,0.25] # minimum value your selection can go to
-    selection_step_nums = [20]*12 + [10]*2 + [20]*2# number of steps between min_selection and max_selection
-
-    ## Experiment Settings ##
-    curves_to_start = 5 # number of growth curves to wait before starting selection; allows us to calculate WT growth rate
-    min_curves_per_step = 5 # number of growth curves to wait before increasing selection
-    min_step_time = 7 # hours; minimum time to spend on a step before increasing or decreasing selection; a reasonable value is at least one full doubling
-    growth_stalled_time = 6 # hours; if growth rate measurement is stalled for this many hours, selection pressure will be eased
-    max_growthrate = 0.07 # growth rate which triggers increase in selection; for example, if growth rate is 0.1, consider making the max_growthrate 0.06
-    min_growthrate = 0.04 # lowest growth rate allowable for selection; if growth rate is less than this, selection pressure will be eased
-    selection_units = 'ug/mL' # the units used for the selection variable. Used only for print outs, doesn't affect script
-    rescue_dilutions = True # True to decrease selection chemical concentration to rescue cells by diluting to the last step if selection is too harsh (up to 20 seconds of dilution)
-                            # False to allow to equilibrate to lower selection concentration over multiple dilutions
-    rescue_threshold = 0.5 # ratio of the lower_thresh OD below which we will not dilute to rescue; ie if lower_thresh = 2 and rescue_threshold = 0.5, we will not dilute if OD < 1
-    max_rescues = 2 # Number of allowed rescue dilutions
-    # TODO: Make column names informative in data files
-    # TODO: Save experiment variables in data file
-    # TODO: Notify the user of number of change of settings and result of settings like: max curves possible in a step,
-    # TODO: change x in for loops to vial for consistency
-    # TODO: turn selection into function
-    # TODO: find/make a function that checks that a variable is a positive int and not anything else
-    # length of time before decreasing selection if growth stalls, how a rescue dilution will work
-    ### End of Stepped Evolution Settings ###
-
     ##### END OF USER DEFINED VARIABLES #####
 
     ##### ADVANCED SETTINGS #####
@@ -122,92 +88,6 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
     ## End of General Fluidics Settings ##
     
     ##### END OF ADVANCED SETTINGS #####
-    
-    ##### VARIABLE INITIALIZATION #####
-    ## Check that min_selection is high enough given stock concentration and bolus_slow ##
-    for i, vial in enumerate(turbidostat_vials):
-        if vial in selection_steps: # if steps defined manually
-            min_selection = selection_steps[vial][0]
-            max_selection = selection_steps[vial][-1]
-        else:
-            min_selection = min_selections[i]
-            max_selection = max_selections[i]
-        if min_selection > max_selection:
-            logger.warning(f"Vial {vial}: min_selection {min_selection} must be less than max_selection {max_selection}.")
-            eVOLVER.stop_exp()
-            print('Experiment stopped, goodbye!')
-            logger.warning('experiment stopped, goodbye!')
-            raise ValueError(f"Vial {vial}: min_selection {min_selection} must be less than max_selection {max_selection}.")
-        
-        # Calculate concentration with the smallest bolus we can add
-        min_conc = ((selection_stock_concs[vial] * bolus_slow) + (0 * VOLUME)) / (bolus_slow + VOLUME) # Adding bolus_slow stock into plain media
-        if min_conc > min_selection:
-            # Solve for stock concentration that will be able to add bolus_slow and reach min_conc
-            new_stock_conc = ((min_selections[i] * (bolus_slow + VOLUME)) - (min_conc * VOLUME)) / bolus_slow
-            logger.warning(f"Vial {vial}: min_selection must be greater than {round(min_conc, 3)}. Decrease stock concentration to at least {int(new_stock_conc)}.")
-            eVOLVER.stop_exp()
-            print('Experiment stopped, goodbye!')
-            logger.warning('experiment stopped, goodbye!')
-            raise ValueError(f"Vial {vial}: min_selection must be greater than {round(min_conc, 3)}. Decrease stock concentration to at least {int(new_stock_conc)}.")
-
-    ## Selection Step Automatic Generation ##
-    # Compare current selection settings to previous and print if they have changed
-    for i, vial in enumerate(turbidostat_vials):
-        if (selection_step_nums[vial] == 0) and (selection_steps == {}): # No steps
-            continue
-
-        # Print and log if the config is updated
-        elif generate_steps:
-            current_config = [elapsed_time, int(log_steps[i]), selection_stock_concs[i], min_selections[i], max_selections[i], selection_step_nums[i]]
-            config_change = su.compare_configs('step_gen', vial, current_config) # Check if config has changed and write to file if it has
-        
-            if config_change: # generate steps automatically
-                if min_selections[i] - max_selections[i] == 0: # Only one step
-                    selection_steps[vial] = [min_selections[i]]
-                elif log_steps[i]:
-                    if min_selections[i] <= 0: # check if min_selection is greater than 0
-                        logger.warning(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.")
-                        eVOLVER.stop_exp()
-                        print('Experiment stopped, goodbye!')
-                        logger.warning('experiment stopped, goodbye!')
-                        raise ValueError(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.") # raise an error if min_selection is less than 0
-                    selection_steps[vial] = np.round(np.logspace(np.log10(min_selections[i]), np.log10(max_selections[i]), num=selection_step_nums[i]), 3)
-                else: # Linear step generation
-                    selection_steps[vial] = np.round(np.linspace(min_selections[i], max_selections[i], num=selection_step_nums[i]), 3)
-            
-                # Write steps to step_config file and log
-                print(f"\nVial {vial}: Generated {len(selection_steps[vial])} steps from {min_selections[i]} to {max_selections[i]} {selection_units}")
-                logger.info(f"Vial {vial}: Generated {len(selection_steps[vial])} steps from {min_selections[i]} to {max_selections[i]} {selection_units}")
-                file_name =  f"vial{vial}_step_config.txt"
-                file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'step_config', file_name)
-                with open(file_path, "a+") as text_file:
-                    line = ','.join(str(step) for step in selection_steps[vial]) # Convert the list to a string with commas as separators
-                    text_file.write(line+'\n') # Write the string to the file, including a newline character
-            
-            else: # Load selection steps from config
-                selection_steps[vial] = su.get_last_n_lines('step_config', vial, 1)[0]
-        
-        else: # If we set steps manually
-            current_steps = [elapsed_time] + selection_steps[vial]
-            current_config = current_steps
-            config_change = su.compare_configs('step', vial, current_config) # Compare and write steps to file if different
-            print(f"\nVial {vial}:")
-            print(f"\tStep config changed | New Steps:\n\t {selection_steps[vial]}\n")
-            logger.info(f"Vial {vial}: step config changed | New Steps: {selection_steps[vial]}")
-
-        # Update step_log if the config is updated
-        current_conc = su.get_last_n_lines('step_log', vial, 1)[0][3] # Get just the concentration from the last step
-        if config_change and current_conc != 0: # TODO: what if the current conc = 0 and config change? Need a better way of skipping this if experiment just started
-            # Update log file with new steps
-            file_name = f"vial{vial}_step_log.txt"
-            file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'step_log', file_name)
-            text_file = open(file_path, "a+")
-            text_file.write(f"{elapsed_time},{elapsed_time},{round(selection_steps[vial][0], 3)},{current_conc},CONFIG CHANGE\n") # Format: [elapsed_time, step_time, current_step, current_conc]
-            text_file.close()
-            logger.info(f"Vial {vial}: step log updated to first step: {round(selection_steps[vial][0], 3)} {selection_units}")
-    ## End of Selection Step Initialization ##
-
-    ##### END OF VARIABLE INITIALIZATION #####
 
     ##### Turbidostat Control Code Below #####
 
@@ -218,15 +98,15 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
         # initialize OD and find OD path
 
         file_name =  "vial{0}_ODset.txt".format(x)
-        ODset_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'ODset', file_name)
+        ODset_path = os.path.join(eVOLVER.exp_dir, 'ODset', file_name)
         data = np.genfromtxt(ODset_path, delimiter=',')
         ODset = data[len(data)-1][1]
         ODsettime = data[len(data)-1][0]
         num_curves=len(data)/2;
 
         file_name =  "vial{0}_OD.txt".format(x)
-        OD_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'OD', file_name)
-        data = su.get_last_n_lines('OD', x, OD_values_to_average) # TODO: make this function not grab first line if it's not a number
+        OD_path = os.path.join(eVOLVER.exp_dir, 'OD', file_name)
+        data = fu.get_last_n_lines('OD', x, OD_values_to_average, eVOLVER.exp_dir) # TODO: make this function not grab first line if it's not a number
         average_OD = 0
 
         # Determine whether turbidostat dilutions are needed
@@ -270,7 +150,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                 time_in = round(time_in, 2)
 
                 file_name =  "vial{0}_pump_log.txt".format(x)
-                file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME,
+                file_path = os.path.join(eVOLVER.exp_dir,
                                          'pump_log', file_name)
                 data = np.genfromtxt(file_path, delimiter=',')
                 last_pump = data[len(data)-1][0]
@@ -283,7 +163,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                         MESSAGE[x + 16] = str(round(time_in + time_out, 2))
 
                         file_name =  "vial{0}_pump_log.txt".format(x)
-                        file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'pump_log', file_name)
+                        file_path = os.path.join(eVOLVER.exp_dir, 'pump_log', file_name)
 
                         text_file = open(file_path, "a+")
                         text_file.write("{0},{1}\n".format(elapsed_time, time_in))
@@ -299,19 +179,32 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
     
     ##### SELECTION LOGIC #####
     # TODO?: Change step_log to selection_log - more clear what it is
-    # TODO?: Start logging event types (ie DILUTION, DECREASE, RESCUE) and reasons for that change (GROWTH_STALLED, EXCEDED_MAX_GROWTH)
     for vial in turbidostat_vials:
         # Get all growth rate data for this vial (read in as a Pandas dataframe)
         file_name =  f"vial{vial}_gr.txt"
-        gr_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'growthrate', file_name)
+        gr_path = os.path.join(eVOLVER.exp_dir, 'growthrate', file_name)
         gr_data = pd.read_csv(gr_path, delimiter=',', header=1, names=['time', 'gr'], dtype={'time': float, 'gr': float})
-        OD_data = su.get_last_n_lines('OD', vial, dilution_window*2) # Get OD data from before and after dilution
+        OD_data = fu.get_last_n_lines('OD', vial, dilution_window*2, eVOLVER.exp_dir) # Get OD data from before and after dilution
+        selection_steps = fu.get_last_n_lines('selection-steps', vial, 1, eVOLVER.exp_dir)[0] # Get the selection steps for this vial
+
+        # Unpack the selection control variables
+        selection_controls = fu.labeled_last_n_lines('selection-control', vial, 1, eVOLVER.exp_dir) # Get the selection controls for this vial
+        stock_concentration = float(selection_controls['stock_concentration'][0]) # Selection stock concentrations
+        curves_to_start = int(selection_controls['curves_to_start'][0]) # Number of curves to start with
+        min_curves_per_step = float(selection_controls['min_curves_per_step'][0]) # Minimum number of curves per step
+        min_step_time = float(selection_controls['min_step_time'][0]) # Minimum step time
+        growth_stalled_time = float(selection_controls['growth_stalled_time'][0]) # Growth stalled time
+        min_growthrate = float(selection_controls['min_growthrate'][0]) # Minimum growth rate
+        max_growthrate = float(selection_controls['max_growthrate'][0]) # Maximum growth rate
+        rescue_dilutions = int(selection_controls['rescue_dilutions'][0]) # Number of rescue dilutions
+        rescue_threshold = float(selection_controls['rescue_threshold'][0]) # Rescue threshold
+        selection_units = selection_controls['selection_units'][0] # Selection units
 
         # Check for selection start
         if (len(gr_data) >= curves_to_start) and (len(OD_data) == dilution_window*2): # If the number of growth curves is more than the number we need to wait
             # Find the current selection step
-            steps = np.array(selection_steps[vial])
-            last_step_log = su.get_last_n_lines('step_log', vial, 1)[0] # Format: [elapsed_time, step_change_time, current_step, current_conc]
+            steps = np.array(selection_steps)
+            last_step_log = fu.get_last_n_lines('step_log', vial, 1, eVOLVER.exp_dir)[0] # Format: [elapsed_time, step_change_time, current_step, current_conc]
             last_time = float(last_step_log[0]) # time of the last step log; includes concentration adjustment calculations for dilutions
             last_step_change_time = float(last_step_log[1]) # experiment time that selection level was last changed
             last_step = float(last_step_log[2]) # last selection target level (chemical concentration)
@@ -374,8 +267,8 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
 
                         # RESCUE DILUTION LOGIC #
                         rescue_count = su.count_rescues(vial) # Determine number of previous rescue dilutions since last selection increase
-                        if rescue_dilutions and (rescue_count >= max_rescues):
-                            logger.warning(f'Vial {vial}: SKIPPING RESCUE DILUTION | number of rescue dilutions since last selection increase ({rescue_count}) >= max_rescues ({max_rescues})')
+                        if rescue_dilutions and (rescue_count >= rescue_dilutions):
+                            logger.warning(f'Vial {vial}: SKIPPING RESCUE DILUTION | number of rescue dilutions since last selection increase ({rescue_count}) >= rescue_dilutions ({rescue_dilutions})')
 
                         elif rescue_dilutions and (np.median(OD_data[:,1]) > (lower_thresh[vial]*rescue_threshold)): # Make a dilution to rescue cells to lower selection level; however don't make one if OD is too low or we have already done the max number of rescues
                             # Calculate the amount to dilute to reach the new selection level
@@ -409,7 +302,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                                 MESSAGE[vial] = str(time_in) # influx pump
                                 MESSAGE[vial + 16] = str(round(time_in + time_out,2)) # efflux pump
                                 file_name =  f"vial{vial}_pump_log.txt"
-                                file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'pump_log', file_name)
+                                file_path = os.path.join(eVOLVER.exp_dir, 'pump_log', file_name)
                                 text_file = open(file_path, "a+")
                                 text_file.write("{0},{1}\n".format(elapsed_time, time_in))
                                 text_file.close()
@@ -446,7 +339,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
             try:
                 # CHEMICAL CONCENTRATION FROM DILUTION #
                 # Load the last pump event
-                last_dilution = su.get_last_n_lines('pump_log', vial, 1)[0] # Format: [elapsed_time, time_in]
+                last_dilution = fu.get_last_n_lines('pump_log', vial, 1, eVOLVER.exp_dir)[0] # Format: [elapsed_time, time_in]
                 last_dilution_time = last_dilution[0] # time of the last pump event
 
                 # Calculate the dilution factor based off of proportion of OD change
@@ -471,12 +364,12 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                 # Calculate amount of chemical to add to vial; only add if below target concentration and above lower OD threshold
                 if (conc_ratio < 1) and (np.median(OD_data[:,1]) > lower_thresh[vial]) and (current_step != 0):
                     # Bolus derived from concentration equation:: C_final = [C_a * V_a + C_b * V_b] / [V_a + V_b]
-                    calculated_bolus = (VOLUME * (current_conc - current_step)) / (current_step - selection_stock_concs[vial]) # in mL, bolus size of stock to add
+                    calculated_bolus = (VOLUME * (current_conc - current_step)) / (current_step - stock_concentration) # in mL, bolus size of stock to add
                     if calculated_bolus > 5: # prevent more than 5 mL added at one time to avoid overflows
                         calculated_bolus = 5
                         # TODO?: add efflux event? How much will volume increase before next efflux otherwise?
                         # Update current concentration because we are not bringing to full target conc
-                        current_conc = ((selection_stock_concs[vial] * calculated_bolus) + (current_conc * VOLUME)) / (calculated_bolus + VOLUME) 
+                        current_conc = ((stock_concentration * calculated_bolus) + (current_conc * VOLUME)) / (calculated_bolus + VOLUME) 
                         print(f'Vial {vial}: Selection chemical bolus too large (adding 5mL) | current concentration {round(current_conc, 3)} {selection_units} | current step {current_step}')
                         logger.info(f'Vial {vial}: Selection chemical bolus too large (adding 5mL) | current concentration {round(current_conc, 3)} {selection_units} | current step {current_step}')
                     elif calculated_bolus < bolus_slow:
@@ -495,7 +388,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                     
                         # Update slow pump log
                         file_name =  f"vial{vial}_slow_pump_log.txt"
-                        file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'slow_pump_log', file_name)
+                        file_path = os.path.join(eVOLVER.exp_dir, 'slow_pump_log', file_name)
                         text_file = open(file_path, "a+")
                         text_file.write("{0},{1}\n".format(elapsed_time, time_in))
                         text_file.close()
@@ -508,7 +401,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
                 # Log current selection state
                 if (step_changed_time != last_step_change_time) or (current_step != last_step) or (current_conc != last_conc) or (selection_status_message != ''): # Only log if step changed or conc changed
                     file_name =  f"vial{vial}_step_log.txt"
-                    file_path = os.path.join(eVOLVER.exp_dir, EXP_NAME, 'step_log', file_name)
+                    file_path = os.path.join(eVOLVER.exp_dir, 'step_log', file_name)
                     text_file = open(file_path, "a+")
                     text_file.write(f"{elapsed_time},{step_changed_time},{current_step},{round(current_conc, 5)},{selection_status_message}\n") # Format: [elapsed_time, step_changed_time, current_step, current_conc]
                     text_file.close()

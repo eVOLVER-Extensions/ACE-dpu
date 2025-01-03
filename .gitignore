@@ -12,3 +12,5 @@ venv.bak/
 Icon
 
 Icon?
+__pycache__/
+data/

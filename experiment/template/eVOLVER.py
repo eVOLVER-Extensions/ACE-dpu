@@ -19,7 +19,8 @@ import custom_script
 from custom_script import EXP_NAME
 from custom_script import EVOLVER_PORT, OPERATION_MODE
 from custom_script import STIR_INITIAL, TEMP_INITIAL, EXCEL_CONFIG_FILE
-import step_utils as su
+import utils.config_utils as cu
+import utils.step_init as step_init 
 
 # Should not be changed
 # vials to be considered/excluded should be handled
@@ -49,7 +50,7 @@ class EvolverNamespace(BaseNamespace):
     OD_initial = None
     experiment_params = None
     ip_address = None
-    exp_dir = SAVE_PATH
+    exp_dir = EXP_DIR
 
     def on_connect(self, *args):
         print("Connected to eVOLVER as client")
@@ -327,44 +328,6 @@ class EvolverNamespace(BaseNamespace):
         for default in defaults:
             text_file.write(default + '\n')
         text_file.close()
-
-    def load_excel_configs(self, elapsed_time, vials, config_filename=EXCEL_CONFIG_FILE):
-        """
-        Load configurations from an Excel file and compare them with existing configs for each vial.
-
-        Args:
-            vials (list): A list of vials for which to compare configs.
-            config_filename (str, optional): The path to the Excel file containing the configurations. Defaults to EXCEL_CONFIG_FILE.
-
-        Side Effects:
-            Logs config changes for each vial.
-            Closes the Excel file handle.
-        """
-        
-        # Load the Excel file
-        excel_file = pd.ExcelFile(config_filename)
-
-        # Get the list of configs
-        config_names = excel_file.sheet_names
-
-        # Iterate through each sheet
-        for config_name in config_names:
-            # Read the sheet into a DataFrame
-            config = pd.read_excel(excel_file, sheet_name=config_name)
-            
-            # Compare config from file with existing configs for each vial
-            for vial in vials:
-                current_config = np.array(config.loc[vial])
-                current_config[0] = elapsed_time # replace first value in current config with elapsed time
-                config_change = su.compare_configs(config_name, vial, current_config)
-
-                if config_change:
-                    # Log config change
-                    print(f'Vial {vial}: updating {config_name} config')
-                    logger.info(f'Vial {vial}: updating {config_name} config')
-        
-        # Explicitly close the file handle
-        excel_file.close()
                 
     def initialize_exp(self, vials, experiment_params, log_name, quiet, verbose, ip_address, always_yes = False):
         self.ip_address = ip_address
@@ -415,8 +378,6 @@ class EvolverNamespace(BaseNamespace):
             os.makedirs(os.path.join(EXP_DIR, 'ODset'))
             os.makedirs(os.path.join(EXP_DIR, 'growthrate'))
             os.makedirs(os.path.join(EXP_DIR, 'chemo_config'))
-            os.makedirs(os.path.join(EXP_DIR, 'step_config')) # for stepwise evolution settings
-            os.makedirs(os.path.join(EXP_DIR, 'step_gen_config')) # for stepwise evolution settings
             os.makedirs(os.path.join(EXP_DIR, 'step_log')) # for stepwise evolution logging
   
             setup_logging(log_name, quiet, verbose)
@@ -453,20 +414,11 @@ class EvolverNamespace(BaseNamespace):
                                   defaults=["0,0,0",
                                             "0,0,0"],
                                   directory='chemo_config')
-                # make stepwise evolution settings file
-                self._create_file(x, 'step_config',
-                                  defaults=[exp_str,
-                                            "0,0,0"], # Format: [elapsed_time, step1, step2, ...]
-                                  directory='step_config')
-                # make stepwise evolution variable generation file
-                self._create_file(x, 'step_gen_config',
-                                  defaults=[exp_str,
-                                            "0,0,0"], # Format: [elapsed_time, ]
-                                  directory='step_gen_config')
                 # make stepwise evolution data logging file
                 self._create_file(x, 'step_log',
                                   defaults=[exp_str,
-                                            "0,0,0,0,0"], # Format: [elapsed_time, step_change_time, current step, chemical_concentration, event_message]
+                                            "elapsed_time,step_change_time,current_step,chemical_concentration,event_message",
+                                            "0,0,0,0,0"],
                                   directory='step_log')
 
             stir_rate = STIR_INITIAL
@@ -500,7 +452,11 @@ class EvolverNamespace(BaseNamespace):
             self.OD_initial = x[1]
 
         elapsed_time = round((time.time() - start_time) / 3600, 4)
-        self.load_excel_configs(elapsed_time, vials, config_filename=EXCEL_CONFIG_FILE) # Load configurations from an Excel file and compare them with existing configs for each vial.
+        
+        # Selection initialization
+        excel_configs = cu.load_excel_configs(EXCEL_CONFIG_FILE)
+        step_init.update_selection_configs(elapsed_time, vials, excel_configs, logger, self)
+        step_init.plot_steps(vials, 'selection-steps', 'Selection', self.exp_dir) # plot selection steps for each vial TODO only plot steps if there was an update?
 
         # copy current custom script to txt file
         backup_filename = '{0}_{1}.txt'.format(EXP_NAME,
