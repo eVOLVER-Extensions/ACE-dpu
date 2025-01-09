@@ -17,7 +17,7 @@ def exponential_growth(x, a, b):
     return a * np.exp(b * x)
 
 #### FUNCTIONS THAT AID SELECTION CONTROL ####
-def count_rescues(vial, eVOLVER):
+def count_rescues(vial, exp_dir):
     """
     Counts the occurrences of 'RESCUE' since the last 'INCREASE' message 
     from the specified log file.
@@ -29,7 +29,7 @@ def count_rescues(vial, eVOLVER):
     int: The number of 'RESCUE' occurrences since the last 'INCREASE' message.
     """
     file_name = f"vial{vial}_step_log.txt"
-    file_path = os.path.join(eVOLVER.exp_dir, 'step_log', file_name)
+    file_path = os.path.join(exp_dir, 'step_log', file_name)
 
     try:
         with open(file_path, "r") as text_file:

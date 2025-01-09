@@ -112,5 +112,24 @@ def labeled_last_n_lines(var_name, vial, n_lines, exp_dir):
         return pd.DataFrame(data, columns=[heading])
     return pd.DataFrame(data, columns=heading)
 
+#### FUNCTIONS FOR WRITING FILES ####
+def update_log(vial, log_name, elapsed_time, message, exp_dir):
+    """
+    Updates a log file with a new message.
+    Args:
+        vial (int): The vial number to identify the log file.
+        elapsed_time (float): The elapsed time of the experiment.
+        message (str): The message to write to the log file.
+        exp_dir (str): The directory where the log files are stored.
+        log_name (str): The name of the log file.
+    Returns:
+        None
+    """
+    file_name = f"vial{vial}_{log_name}.txt"
+    file_path = os.path.join(exp_dir, log_name, file_name)
+    
+    with open(file_path, "a+") as text_file:
+        text_file.write(f"{elapsed_time},{message}\n")
+
 if __name__ == '__main__':
     print('Please run eVOLVER.py instead')
