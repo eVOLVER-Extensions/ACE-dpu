@@ -186,26 +186,45 @@ def generate_selection_steps(step_gen_config, logger, eVOLVER):
 # Plot steps for all vials in a 4x4 grid as a step plot
 def plot_steps(vials, config_name, step_type, exp_dir):
     """
-    Plots the steps for all vials in a 4x4 grid as a step plot.
+    Plots the steps for all vials in a grid as a step plot.
     Args:
         vials (list): A list of vials.
         config_name (str): The name of the configuration.
         step_type (str): The type of step.
-        save_path (str): The path to save the plot.
+        exp_dir (str): The path to the experiment directory.
     Returns:
         None
     """
-    fig, axs = plt.subplots(4, 4, figsize=(16, 16))
+    num_vials = len(vials)
+    num_cols = int(np.ceil(np.sqrt(num_vials)))
+    num_rows = int(np.ceil(num_vials / num_cols))
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(num_cols*4, num_rows*4))
+    axs = np.atleast_1d(axs).flatten()  # Ensure axs is a flat array for consistent indexing
+
     fig.suptitle(f'{step_type} steps for all vials', fontsize=16)
+
     for i, vial in enumerate(vials):
-        data = fu.get_last_n_lines(config_name, vial, 1, exp_dir)[0]
-        axs[i//4, i%4].step(range(1, len(data)), data[1:], where='post')
-        axs[i//4, i%4].set_title(f'Vial {vial}')
-        axs[i//4, i%4].set_xlabel('Step Number')
-        axs[i//4, i%4].set_ylabel(f'{step_type}')
+        try:
+            # Replace this with your actual function to fetch data
+            data = fu.get_last_n_lines(config_name, vial, 1, exp_dir)[0]
+            axs[i].step(range(1, len(data)), data[1:], where='post')
+            axs[i].set_title(f'Vial {vial}')
+            axs[i].set_xlabel('Step Number')
+            axs[i].set_ylabel(f'{step_type}')
+        except Exception as e:
+            axs[i].text(0.5, 0.5, f"Error: {e}", ha='center', va='center', fontsize=10)
+            axs[i].set_title(f'Vial {vial} - Error')
+            axs[i].set_axis_off()
+
+    for j in range(i + 1, len(axs)):  # Turn off unused subplots
+        axs[j].set_axis_off()
+
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(os.path.join(exp_dir, f'{step_type}_steps.png'))
+    save_path = os.path.join(exp_dir, f'{step_type}_steps.png')
+    plt.savefig(save_path)
     plt.show()
+# # Example call
+# plot_steps(vials, 'selection-steps', 'Selection', EXP_DIR)
 
 # def validate_selection_parameters(vials, selection_steps, min_selections, max_selections, 
 #                                   stock_concentrations, bolus_slow, volume, logger, eVOLVER):

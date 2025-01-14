@@ -107,7 +107,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
 
         file_name =  "vial{0}_OD.txt".format(x)
         OD_path = os.path.join(eVOLVER.exp_dir, 'OD', file_name)
-        data = fu.get_last_n_lines('OD', x, OD_values_to_average, eVOLVER.exp_dir) # TODO: make this function not grab first line if it's not a number
+        data = eVOLVER.tail_to_np(OD_path, OD_values_to_average)
         average_OD = 0
 
         # Determine whether turbidostat dilutions are needed
@@ -117,11 +117,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
         if data.size != 0:
             # Take median to avoid outlier
             od_values_from_file = data[:,1]
-            try:
-                average_OD = float(np.median(od_values_from_file))
-            except Exception as e:
-                print(f'Vial {x}: od_values_from_file {od_values_from_file}\n\t{e}')
-                continue
+            average_OD = float(np.median(od_values_from_file))
 
             #if recently exceeded upper threshold, note end of growth curve in ODset, allow dilutions to occur and growthrate to be measured
             if (average_OD > upper_thresh[x]) and (ODset != lower_thresh[x]):
@@ -184,7 +180,7 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
         controller = step_control.SteppedController(vial, eVOLVER.exp_dir, dilution_window, logger, elapsed_time, eVOLVER)
         
         # Perform control operations for this vial
-        MESSAGE = controller.control(MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow)
+        MESSAGE = controller.control(MESSAGE, time_out, VOLUME, lower_thresh[vial], flow_rate, bolus_slow)
     
     # send fluidic command only if we are actually turning on any of the pumps
     if MESSAGE != ['--'] * 48:
