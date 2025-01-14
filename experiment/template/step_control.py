@@ -23,6 +23,7 @@ class SteppedController:
         self.fold_decrease = 0.5 # Fold to decrease when going below lowest step
 
         # Selection Controls
+        self.selection_type = self.selection_controls.selection_type.lower()
         self.stock_conc = float(self.selection_controls.stock_concentration)
         self.curves_to_start = int(self.selection_controls.curves_to_start)
         self.min_curves_per_step = int(self.selection_controls.min_curves_per_step)
@@ -79,7 +80,9 @@ class SteppedController:
             return MESSAGE
         
         self.determine_step()
-        MESSAGE = self.adjust_concentration(MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow)
+
+        if self.selection_type == 'chemical':
+            MESSAGE = self.adjust_concentration(MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow)
 
         if self.selection_status_message: # Log the selection status message if there is one
             log_message = f"{self.step_changed_time},{self.current_step},{round(self.current_conc, 5)},{self.selection_status_message}"
