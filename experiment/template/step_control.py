@@ -8,15 +8,24 @@ import utils.file_utils as fu
 import utils.config_utils as cu
 
 class SteppedController:
-    def __init__(self, vial, exp_dir, dilution_window, logger, elapsed_time, eVOLVER):
+    def __init__(self, vial, parameter, dilution_window, elapsed_time, eVOLVER, fluidics_params=None):
         self.vial = vial
-        self.exp_dir = exp_dir
+        self.parameter = parameter
+        self.exp_dir = eVOLVER.exp_dir
         self.dilution_window = dilution_window
-        self.logger = logger
+        self.logger = eVOLVER.logger
         self.elapsed_time = elapsed_time
         self.eVOLVER = eVOLVER
         self.gr_data, self.OD_data, self.selection_steps, self.selection_controls, self.last_step_log = self.load_info()
         self.selection_status_message = ''
+
+        # Fluidics Parameters
+        if fluidics_params:
+            self.time_out = fluidics_params['time_out']
+            self.volume = fluidics_params['volume']
+            self.lower_thresh = fluidics_params['lower_thresh']
+            self.flow_rate = fluidics_params['flow_rate']
+            self.bolus_slow = fluidics_params['bolus_slow']
         
         # Additional Parameters
         self.max_selection_bolus = 5 # mL; Maximum amount of selection chemical to add at one time to prevent overflows
@@ -24,15 +33,16 @@ class SteppedController:
 
         # Selection Controls
         self.selection_type = self.selection_controls.selection_type.lower()
-        self.stock_conc = float(self.selection_controls.stock_concentration)
+        if self.selection_type == 'chemical':
+            self.stock_conc = float(self.selection_controls.stock_concentration)
+            self.rescue_dilutions = int(self.selection_controls.rescue_dilutions)
+            self.rescue_threshold = float(self.selection_controls.rescue_threshold)
         self.curves_to_start = int(self.selection_controls.curves_to_start)
         self.min_curves_per_step = int(self.selection_controls.min_curves_per_step)
         self.min_step_time = float(self.selection_controls.min_step_time)
         self.growth_stalled_time = float(self.selection_controls.growth_stalled_time)
         self.min_growthrate = float(self.selection_controls.min_growthrate)
         self.max_growthrate = float(self.selection_controls.max_growthrate)
-        self.rescue_dilutions = int(self.selection_controls.rescue_dilutions)
-        self.rescue_threshold = float(self.selection_controls.rescue_threshold)
         self.selection_units = self.selection_controls.selection_units
 
         # Step Log
@@ -54,41 +64,36 @@ class SteppedController:
         gr_data = pd.read_csv(gr_path, delimiter=',', header=1, names=['time', 'gr'], dtype={'time': float, 'gr': float})
 
         OD_data = fu.get_last_n_lines('OD', self.vial, self.dilution_window * 2, self.exp_dir)
-        selection_steps =fu.get_last_n_lines('selection-steps', self.vial, 1, self.exp_dir)[0][1:]
-        selection_controls = fu.labeled_last_n_lines('selection-control', self.vial, 1, self.exp_dir).iloc[0]
-        last_step_log = fu.get_last_n_lines('step_log', self.vial, 1, self.exp_dir)[0]
+        selection_steps =fu.get_last_n_lines(f'{self.parameter}-steps', self.vial, 1, self.exp_dir)[0][1:]
+        selection_controls = fu.labeled_last_n_lines(f'{self.parameter}-control', self.vial, 1, self.exp_dir).iloc[0]
+        last_step_log = fu.get_last_n_lines(f'{self.parameter}_log', self.vial, 1, self.exp_dir)[0]
 
         return gr_data, OD_data, selection_steps, selection_controls, last_step_log
 
-    def control(self, MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow):
+    def control(self, MESSAGE=None):
         """
         Main function to control stepped selection logic for a single vial in the eVOLVER system.
 
         Parameters:
         - MESSAGE: Fluidics command message for all vials.
-        - time_out: Extra time to pump for efflux pumps
-        - VOLUME: Volume of the vial in mL.
-        - lower_thresh: Lower OD threshold for this vial.
-        - flow_rate: Flow rate of ALL pumps in mL/s.
-        - bolus_slow: Minimum bolus size for selection chemical addition.
 
         Returns:
         - MESSAGE: Fluidics command message for all vials, updated for this vial.
         """
 
         if not self.check_started():
-            return MESSAGE
+            return MESSAGE,self.selection_status_message
         
         self.determine_step()
 
-        if self.selection_type == 'chemical':
-            MESSAGE = self.adjust_concentration(MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow)
+        if (self.selection_type == 'chemical') and (MESSAGE is not None):
+            MESSAGE = self.adjust_concentration(MESSAGE)
 
         if self.selection_status_message: # Log the selection status message if there is one
             log_message = f"{self.step_changed_time},{self.current_step},{round(self.current_conc, 5)},{self.selection_status_message}"
-            fu.update_log(self.vial, 'step_log', self.elapsed_time, log_message, self.exp_dir)
+            fu.update_log(self.vial, f'{self.parameter}_log', self.elapsed_time, log_message, self.exp_dir)
 
-        return MESSAGE
+        return MESSAGE,self.selection_status_message
 
     def check_started(self):
         """Check if the experiment has started based on the data available."""
@@ -113,11 +118,11 @@ class SteppedController:
                 last_gr = self.gr_data.tail(self.min_curves_per_step)['gr'].median()
                 
                 if (self.elapsed_time-last_gr_time) > self.growth_stalled_time:
-                    self.decrease_step("GROWTH STALLED", last_gr_time)
+                    self.decrease_step("GROWTH STALLED")
                     self.eVOLVER.calc_growth_rate(self.vial, last_gr, self.elapsed_time) # calculate and log a growth rate from last dilution to now
 
                 elif (last_gr < self.min_growthrate) and (num_curves_this_step >= self.min_curves_per_step):
-                    self.decrease_step("LOW GROWTH RATE", last_gr_time)
+                    self.decrease_step("LOW GROWTH RATE")
 
                 elif (last_gr > self.max_growthrate) and (num_curves_this_step >= self.min_curves_per_step):
                     self.increase_step("HIGH GROWTH RATE")
@@ -125,7 +130,7 @@ class SteppedController:
             print(f"Vial {self.vial}: Error in step determination: {e}\n{traceback.format_exc()}")
             self.logger.error(f"Vial {self.vial}: Error in step determination: {e}\n{traceback.format_exc()}")
 
-    def decrease_step(self, reason, gr_start):
+    def decrease_step(self, reason):
         """Decrease the selection step for the vial."""
         if self.closest_step_index == 0:
             self.current_step = self.current_step * self.fold_decrease
@@ -153,7 +158,7 @@ class SteppedController:
         self.logger.info(f"Vial {self.vial}: {self.selection_status_message}")
 
     ## FLUIDICS FUNCTIONS ##    
-    def adjust_concentration(self, MESSAGE, time_out, VOLUME, lower_thresh, flow_rate, bolus_slow):
+    def adjust_concentration(self, MESSAGE):
         """
         Adjust the concentration of the selection chemical in the vial based on the current experiment state.
         This method updates the current chemical concentration, optionally performs rescue dilutions if needed,
@@ -161,11 +166,6 @@ class SteppedController:
 
         Parameters:
         - MESSAGE: Fluidics command message for all vials.
-        - time_out: Extra time to pump for efflux pumps
-        - VOLUME: Volume of the vial in mL.
-        - lower_thresh: Lower OD threshold for this vial.
-        - flow_rate: Flow rate of ALL pumps in mL/s.
-        - bolus_slow: Minimum bolus size for selection chemical addition.
 
         Returns:
         - MESSAGE: Fluidics command message for all vials, updated for this vial.
@@ -176,22 +176,22 @@ class SteppedController:
             
             # Rescue Dilutions
             if self.rescue_dilutions and (self.current_step < self.last_step):
-                return self.rescue_dilution(MESSAGE, lower_thresh, VOLUME, flow_rate, time_out)
+                return self.rescue_dilution(MESSAGE)
             
             # Chemical Addition
             elif self.current_step > self.current_conc:
                 try:
                     # Calculate amount of chemical to add to vial; only add if below target concentration and above lower OD threshold
-                    if (np.median(self.OD_data[:,1]) > lower_thresh) and (self.current_step > 0):
-                        calculated_bolus = (VOLUME * (self.current_conc - self.current_step)) / (self.current_step - self.stock_conc) # in mL, bolus size of stock to add
+                    if (np.median(self.OD_data[:,1]) > self.lower_thresh[self.vial]) and (self.current_step > 0):
+                        calculated_bolus = (self.volume * (self.current_conc - self.current_step)) / (self.current_step - self.stock_conc) # in mL, bolus size of stock to add
                         # calculated_bolus derived from concentration equation:: C_final = [C_a * V_a + C_b * V_b] / [V_a + V_b]
 
                         if calculated_bolus > self.max_selection_bolus: # prevent more than 5 mL added at one time to avoid overflows
                             calculated_bolus = 5
                             # Update current concentration because we are not bringing to full target conc
-                            self.current_conc = ((self.stock_conc * calculated_bolus) + (self.current_conc * VOLUME)) / (calculated_bolus + VOLUME) 
+                            self.current_conc = ((self.stock_conc * calculated_bolus) + (self.current_conc * self.volume)) / (calculated_bolus + self.volume) 
                             self.logger.info(f'Vial {self.vial}: Selection chemical bolus too large (adding 5mL) | current concentration {round(self.current_conc, 3)} {self.selection_units} | current step {self.current_step}')
-                        elif calculated_bolus < bolus_slow:
+                        elif calculated_bolus < self.bolus_slow:
                             self.logger.info(f'Vial {self.vial}: Selection chemical bolus too small: current concentration {round(self.current_conc, 3)} {self.selection_units} | current step {self.current_step}')
                             # print(f'Vial {vial}: Selection chemical bolus too small: current concentration {round(current_conc, 3)} {selection_units} | current step {current_step}')
                             calculated_bolus = 0
@@ -200,14 +200,14 @@ class SteppedController:
                             self.current_conc = self.current_step
 
                         if calculated_bolus != 0 and not np.isnan(calculated_bolus):
-                            time_in = round(calculated_bolus / float(flow_rate[self.vial + 32]), 2) # time to add bolus
+                            time_in = round(calculated_bolus / float(self.flow_rate[self.vial + 32]), 2) # time to add bolus
                             MESSAGE[self.vial + 32] = str(time_in) # set the pump message
                         
                             fu.update_log(self.vial, 'slow_pump_log', self.elapsed_time, time_in, self.exp_dir)
                             self.selection_status_message += f'SELECTION CHEMICAL ADDED {round(calculated_bolus, 3)}mL | '
 
-                    elif (np.median(self.OD_data[:,1]) < lower_thresh) and (self.current_step != 0):
-                        self.logger.info(f'Vial {self.vial}: SKIPPED selection chemical bolus: OD {round(np.median(self.OD_data[:,1]), 2)} below lower OD threshold {lower_thresh}')
+                    elif (np.median(self.OD_data[:,1]) < self.lower_thresh[self.vial]) and (self.current_step != 0):
+                        self.logger.info(f'Vial {self.vial}: SKIPPED selection chemical bolus: OD {round(np.median(self.OD_data[:,1]), 2)} below lower OD threshold {self.lower_thresh[self.vial]}')
                         self.selection_status_message += f'SKIPPED SELECTION CHEMICAL - LOW OD {round(np.median(self.OD_data[:,1]), 2)} | '
                 except Exception as e:
                     print(f"Vial {self.vial}: Error in Selection Chemical Addition Step: \n\t{e}\nTraceback:\n\t{traceback.format_exc()}")
@@ -237,18 +237,18 @@ class SteppedController:
             self.current_conc = self.last_conc * dilution_factor
             self.selection_status_message += f'DILUTION {round(dilution_factor, 3)}X | '
 
-    def rescue_dilution(self, MESSAGE, lower_thresh, VOLUME, flow_rate, time_out):
+    def rescue_dilution(self, MESSAGE):
         """
         Perform a dilution to rescue cells by lowering the selection level if cell density is above a specified threshold.
         This method checks if the maximum number of rescue dilutions has already been performed. If not, it calculates a dilution factor
         and adjusts the pump times to lower the selection to either a predefined rescue threshold or the previous selection step.
         """
-        rescue_count = su.count_rescues(self.vial, self.exp_dir) # Determine number of previous rescue dilutions since last selection increase
+        rescue_count = su.count_rescues(self.vial, self.parameter, self.exp_dir) # Determine number of previous rescue dilutions since last selection increase
         if self.rescue_dilutions and (rescue_count >= self.rescue_dilutions):
             self.logger.warning(f'Vial {self.vial}: SKIPPING RESCUE DILUTION | number of rescue dilutions since last selection increase ({rescue_count}) >= rescue_dilutions ({self.rescue_dilutions})')
             return MESSAGE
 
-        elif self.rescue_dilutions and (np.median(self.OD_data[:,1]) > (lower_thresh*self.rescue_threshold)): # Make a dilution to rescue cells to lower selection level; however don't make one if OD is too low or we have already done the max number of rescues
+        elif self.rescue_dilutions and (np.median(self.OD_data[:,1]) > (self.lower_thresh[self.vial]*self.rescue_threshold)): # Make a dilution to rescue cells to lower selection level; however don't make one if OD is too low or we have already done the max number of rescues
             # Calculate the amount to dilute to reach the new selection level
             if self.last_step <= self.selection_steps[0]: # If the last step is at or below the minimum, dilute to the rescue threshold
                 dilution_factor = self.rescue_threshold
@@ -259,14 +259,14 @@ class SteppedController:
                 dilution_factor = self.rescue_threshold
             
             # Set pump time_in for dilution and log the pump event
-            time_in = - (np.log(dilution_factor)*VOLUME)/flow_rate[self.vial] # time to dilute to the new selection level
+            time_in = - (np.log(dilution_factor)*self.volume)/self.flow_rate[self.vial] # time to dilute to the new selection level
             if np.isnan(time_in) or (time_in <= 0): # Check time_in for NaN
                 self.logger.error(f'Vial {self.vial}: SKIPPING RESCUE DILUTION | time_in is {time_in}')
                 print(f'Vial {self.vial}: SKIPPING RESCUE DILUTION | time_in is {time_in}')
             else: # Make a rescue dilution
                 if time_in > 20: # Limit the time to dilute to 20
                     time_in = 20
-                    dilution_factor = np.exp((time_in*flow_rate[self.vial])/(-VOLUME)) # Calculate the new dilution factor
+                    dilution_factor = np.exp((time_in*self.flow_rate[self.vial])/(-self.volume)) # Calculate the new dilution factor
                     print(f'Vial {self.vial}: [RESCUE DILUTION] | Unable to dilute to {self.current_step} {self.selection_units} (> 20 seconds pumping) | Diluting by {round(dilution_factor, 3)} fold')
                     self.logger.info(f'Vial {self.vial}: [RESCUE DILUTION] | Unable to dilute to {self.current_step} {self.selection_units} (> 20 seconds pumping) | Diluting by {round(dilution_factor, 3)} fold')
                 else:
@@ -275,7 +275,7 @@ class SteppedController:
             
                 time_in = round(time_in, 2)
                 MESSAGE[self.vial] = str(time_in) # influx pump
-                MESSAGE[self.vial + 16] = str(round(time_in + time_out,2)) # efflux pump
+                MESSAGE[self.vial + 16] = str(round(time_in + self.time_out,2)) # efflux pump
                 fu.update_log(self.vial, 'pump_log', self.elapsed_time, time_in, self.exp_dir)
                 self.selection_status_message += f'[RESCUE DILUTION] | '
                 return MESSAGE

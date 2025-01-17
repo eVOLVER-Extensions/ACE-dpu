@@ -21,6 +21,7 @@ from custom_script import EVOLVER_PORT, OPERATION_MODE
 from custom_script import STIR_INITIAL, TEMP_INITIAL, EXCEL_CONFIG_FILE
 import utils.config_utils as cu
 import utils.step_init as step_init 
+import utils.file_utils as fu
 
 # Should not be changed
 # vials to be considered/excluded should be handled
@@ -378,7 +379,6 @@ class EvolverNamespace(BaseNamespace):
             os.makedirs(os.path.join(EXP_DIR, 'ODset'))
             os.makedirs(os.path.join(EXP_DIR, 'growthrate'))
             os.makedirs(os.path.join(EXP_DIR, 'chemo_config'))
-            os.makedirs(os.path.join(EXP_DIR, 'step_log')) # for stepwise evolution logging
   
             setup_logging(log_name, quiet, verbose)
             for x in vials:
@@ -414,12 +414,6 @@ class EvolverNamespace(BaseNamespace):
                                   defaults=["0,0,0",
                                             "0,0,0"],
                                   directory='chemo_config')
-                # make stepwise evolution data logging file
-                self._create_file(x, 'step_log',
-                                  defaults=[exp_str,
-                                            "elapsed_time,step_change_time,current_step,chemical_concentration,event_message",
-                                            "0,0,0,0,0"],
-                                  directory='step_log')
 
             stir_rate = STIR_INITIAL
             temp_values = TEMP_INITIAL
@@ -453,10 +447,16 @@ class EvolverNamespace(BaseNamespace):
 
         elapsed_time = round((time.time() - start_time) / 3600, 4)
         
-        # Selection initialization
+        # Selection log initialization
         excel_configs = cu.load_excel_configs(EXCEL_CONFIG_FILE)
-        step_init.update_selection_configs(elapsed_time, vials, excel_configs, logger, self)
-        step_init.plot_steps(vials, 'selection-steps', 'Selection', self.exp_dir) # plot selection steps for each vial TODO only plot steps if there was an update?
+        selection_parameters = cu.get_unique_parameters(excel_configs) # Find the unique selection parameters as split by '-'
+        for parameter in selection_parameters:
+            default_heading = ["elapsed_time,step_change_time,current_step,chemical_concentration,event_message",
+                                "0,0,0,0,0"]
+            fu.initialize_logs(parameter, vials, default_heading, self)
+            
+            step_init.update_selection_configs(parameter, vials, excel_configs, elapsed_time, logger, self)
+            step_init.plot_steps(vials, f'{parameter}-steps', parameter, self.exp_dir) # plot selection steps for each vial
 
         # copy current custom script to txt file
         backup_filename = '{0}_{1}.txt'.format(EXP_NAME,

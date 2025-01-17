@@ -113,6 +113,27 @@ def labeled_last_n_lines(var_name, vial, n_lines, exp_dir):
     return pd.DataFrame(data, columns=heading)
 
 #### FUNCTIONS FOR WRITING FILES ####
+def initialize_logs(parameter, vials, heading, eVOLVER):
+    """
+    Initializes the log files for the given vials and automatically generates new steps if necessary.
+    
+    Parameters:
+        elapsed_time (float): The elapsed time since the start of the experiment.
+        vials (list): A list of vials to initialize the logs for.
+        heading (str): The heading for the log files.
+    Returns:
+        None
+    """
+    log_name = f'{parameter}_log'
+    log_directory = os.path.join(eVOLVER.exp_dir, log_name)
+
+    if not os.path.exists(log_directory):
+        os.makedirs(log_directory) # for stepwise evolution logging
+        for vial in vials:
+            # make stepwise evolution data logging file
+            eVOLVER._create_file(vial, log_name, defaults=heading, directory=log_name)
+    print(f'Initialized {parameter} logs')
+
 def update_log(vial, log_name, elapsed_time, message, exp_dir):
     """
     Updates a log file with a new message.

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from . import file_utils as fu
 from . import config_utils as cu
 
-def update_selection_configs(elapsed_time, vials, configs, logger, eVOLVER):
+def update_selection_configs(parameter, vials, configs, elapsed_time, logger, eVOLVER):
     """
     Updates selection configs for the given vials and automatically generates new steps if necessary.
     
@@ -16,12 +16,12 @@ def update_selection_configs(elapsed_time, vials, configs, logger, eVOLVER):
         None
     """
     exp_dir = eVOLVER.exp_dir
-    cu.update_config_files(vials, configs['selection-control'], 'selection-control', elapsed_time, logger, exp_dir) # Update the selection control configs
-    cu.update_config_files(vials, configs['selection-step_generation'], 'selection-step_generation', elapsed_time, logger, exp_dir) # Update the selection step generation configs
+    cu.update_config_files(vials, configs[f'{parameter}-control'], f'{parameter}-control', elapsed_time, logger, exp_dir) # Update the selection control configs
+    cu.update_config_files(vials, configs[f'{parameter}-step_generation'], f'{parameter}-step_generation', elapsed_time, logger, exp_dir) # Update the selection step generation configs
 
-    update_steps(vials, configs, elapsed_time, logger, eVOLVER)
+    update_steps(parameter, vials, configs, elapsed_time, logger, eVOLVER)
 
-def update_steps(vials, configs, elapsed_time, logger, eVOLVER):
+def update_steps(parameter, vials, configs, elapsed_time, logger, eVOLVER):
     """
     Update the selection steps for each vial based on the provided configurations.
     Parameters:
@@ -36,28 +36,22 @@ def update_steps(vials, configs, elapsed_time, logger, eVOLVER):
     selection_steps = {}
 
     for vial in vials:
-        control_config = configs['selection-control'].loc[vial]
+        control_config = configs[f'{parameter}-control'].loc[vial]
         step_type = control_config.step_type.lower() # Get the step type for this vial and convert to lower case
         selection_units = control_config.selection_units # Get the units for the selection steps
-        manual_steps = configs['selection-steps'].loc[vial].steps # Get the manual steps for this vial, if any
-        step_gen_config = configs['selection-step_generation'].loc[vial]
+        step_gen_config = configs[f'{parameter}-step_generation'].loc[vial]
 
         # Manually entered steps
         if step_type == 'manual':
-            # print(f'MANUAL selection steps for vial {vial}')
+            manual_steps = configs[f'{parameter}-steps'].loc[vial].steps # Get the manual steps for this vial, if any
             selection_steps[vial] = parse_manual_steps(vial, manual_steps)
 
         # No selection on this vial
-        elif (step_type == 'off') or (control_config.stock_concentration == 0):
+        elif step_type == 'off':
             selection_steps[vial] = [0]
-            # print(f'NO SELECTION for vial {vial}')
-            # logger.info(f'No selection steps for vial {vial}')
 
         # Generated steps
         elif step_type == 'auto':
-            # Generate steps for the given vial
-            # print(f'GENERATING selection steps for vial {vial}')
-            # print(step_gen_config)
             selection_steps[vial] = generate_selection_steps(step_gen_config, logger, eVOLVER)
         
         # Invalid step type
@@ -69,9 +63,9 @@ def update_steps(vials, configs, elapsed_time, logger, eVOLVER):
             raise ValueError(f"Vial {vial}: Invalid step type '{step_type}' in selection-control configuration.\n\tValid step types are 'manual', 'generated', and 'off'.")
         
     # Update the selection step configuration
-    update_step_configs(vials, selection_steps, 'selection-steps', selection_units, elapsed_time, logger, eVOLVER)
+    update_step_configs(parameter, vials, selection_steps, f'{parameter}-steps', selection_units, elapsed_time, logger, eVOLVER)
 
-def update_step_configs(vials, selection_steps, config_name, selection_units, elapsed_time, logger, eVOLVER):
+def update_step_configs(parameter, vials, selection_steps, config_name, selection_units, elapsed_time, logger, eVOLVER):
     """
     Updates the configuration files for the given vials based on the selection steps and elapsed time. Creates files if they do not exist.
     Parameters:
@@ -110,12 +104,12 @@ def update_step_configs(vials, selection_steps, config_name, selection_units, el
                 logger.info(f'Vial {vial}: updating {config_name} config')
                 updated_vials.append(vial)
     
-                # Update step_log if the config is updated
-                current_conc = fu.get_last_n_lines('step_log', vial, 1, eVOLVER.exp_dir)[0][3] # Get just the concentration from the last step
+                # Update parameter_log if the config is updated
+                current_conc = fu.get_last_n_lines(f'{parameter}_log', vial, 1, eVOLVER.exp_dir)[0][3] # Get just the concentration from the last step
                 if current_conc != 0: # TODO: what if the current conc = 0 and config change? Need a better way of skipping this if experiment just started
                     # Update log file with new steps
-                    file_name = f"vial{vial}_step_log.txt"
-                    file_path = os.path.join(eVOLVER.exp_dir, 'step_log', file_name)
+                    file_name = f"vial{vial}_{parameter}_log.txt"
+                    file_path = os.path.join(eVOLVER.exp_dir, f'{parameter}_log', file_name)
                     text_file = open(file_path, "a+")
                     text_file.write(f"{elapsed_time},{elapsed_time},{round(selection_steps[vial][0], 3)},{current_conc},CONFIG CHANGE\n") # Format: [elapsed_time, step_time, current_step, current_conc]
                     text_file.close()
@@ -171,12 +165,6 @@ def generate_selection_steps(step_gen_config, logger, eVOLVER):
     if min_selection - max_selection == 0: # Only one step
         selection_steps = [min_selection]
     elif log_steps: # Logarithmic step generation
-        if min_selection <= 0: # check if min_selection is greater than 0
-            logger.warning(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.")
-            eVOLVER.stop_exp()
-            print('Experiment stopped, goodbye!')
-            logger.warning('experiment stopped, goodbye!')
-            raise ValueError(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.") # raise an error if min_selection is less than 0
         selection_steps = np.round(np.logspace(np.log10(min_selection), np.log10(max_selection), num=step_number), 3)
     else: # Linear step generation
         selection_steps = np.round(np.linspace(min_selection, max_selection, num=step_number), 3)
@@ -230,18 +218,6 @@ def plot_steps(vials, config_name, step_type, exp_dir):
 #                                   stock_concentrations, bolus_slow, volume, logger, eVOLVER):
 #     """
 #     Validates the selection parameters for each vial and ensures constraints are satisfied.
-
-#     Parameters:
-#     - vials: List of vial indices.
-#     - selection_steps: Dictionary defining selection steps for each vial.
-#     - min_selections: List of minimum selection values per vial.
-#     - max_selections: List of maximum selection values per vial.
-#     - stock_concentrations: List of stock concentrations per vial.
-#     - bolus_slow: Smallest bolus volume that can be added (mL).
-#     - volume: Total volume in the vial (mL).
-#     - logger: Logger for warnings and errors.
-#     - eVOLVER: eVOLVER instance for stopping experiments.
-
 #     Raises:
 #     - ValueError: If any vial has invalid selection parameters.
 #     """
@@ -260,7 +236,12 @@ def plot_steps(vials, config_name, step_type, exp_dir):
 #             print('Experiment stopped, goodbye!')
 #             logger.warning('experiment stopped, goodbye!')
 #             raise ValueError(f"Vial {vial}: min_selection {min_selection} must be less than max_selection {max_selection}.")
-        
+    #     if min_selection <= 0: # check if min_selection is greater than 0
+            # logger.warning(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.")
+            # eVOLVER.stop_exp()
+            # print('Experiment stopped, goodbye!')
+            # logger.warning('experiment stopped, goodbye!')
+            # raise ValueError(f"Vial {vial}: min_selection must be greater than 0 for logarithmic steps.") # raise an error if min_selection is less than 0
 #         # Calculate concentration with the smallest bolus we can add
 #         min_conc = ((stock_concentrations[vial] * bolus_slow) + (0 * volume)) / (bolus_slow + volume) # Adding bolus_slow stock into plain media
 #         if min_conc > min_selection:

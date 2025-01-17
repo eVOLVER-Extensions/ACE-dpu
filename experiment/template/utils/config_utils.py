@@ -136,5 +136,26 @@ def update_config_files(vials, config, config_name, elapsed_time, logger, exp_di
                 updated_vials.append(vial)
     return updated_vials
 
+def get_unique_parameters(config_dict):
+    """
+    Return a list of unique first components (split by '-') 
+    from the keys of a given dictionary.
+
+    Parameters
+    ----------
+    config_dict : dict
+        A dictionary whose keys contain strings separated by '-'.
+
+    Returns
+    -------
+    list
+        A list of unique first components from each hyphen-separated key.
+    """
+    unique_first_elements = set()
+    for config in config_dict.keys():
+        first_element = config.split('-')[0]
+        unique_first_elements.add(first_element)
+    return list(unique_first_elements)
+
 if __name__ == '__main__':
     print('Please run eVOLVER.py instead')

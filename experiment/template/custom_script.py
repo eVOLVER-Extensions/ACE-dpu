@@ -174,13 +174,14 @@ def turbidostat(eVOLVER, input_data, vials, elapsed_time):
 
     ##### END OF Turbidostat Control Code #####
     
-    ##### SELECTION LOGIC #####
+    ##### SELECTION CONTROL #####
+    fluidics_params = {'time_out': time_out, 'volume': VOLUME, 'flow_rate': flow_rate, 'bolus_fast': bolus_fast, 'bolus_slow': bolus_slow, 'lower_thresh': lower_thresh}
     for vial in vials:
         # Create a SteppedController instance for the current vial
-        controller = step_control.SteppedController(vial, eVOLVER.exp_dir, dilution_window, logger, elapsed_time, eVOLVER)
+        controller = step_control.SteppedController(vial, 'selection', dilution_window, elapsed_time, eVOLVER, fluidics_params=fluidics_params)
         
-        # Perform control operations for this vial
-        MESSAGE = controller.control(MESSAGE, time_out, VOLUME, lower_thresh[vial], flow_rate, bolus_slow)
+        # Perform selection control operations for this vial
+        MESSAGE,selection_status_message = controller.control(MESSAGE)
     
     # send fluidic command only if we are actually turning on any of the pumps
     if MESSAGE != ['--'] * 48:
